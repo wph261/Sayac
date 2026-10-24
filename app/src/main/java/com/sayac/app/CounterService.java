@@ -19,6 +19,7 @@ import android.view.Gravity;
 import android.view.View;
 import android.view.WindowManager;
 import android.view.accessibility.AccessibilityEvent;
+import android.view.animation.LinearInterpolator;
 import android.widget.LinearLayout;
 import android.widget.TextView;
 import java.util.Calendar;
@@ -27,14 +28,19 @@ public class CounterService extends AccessibilityService {
     // 1-10 iyi, 11-25 gozler kizarir, 26-35 gozler kapanir,
     // 36-45 kapali, 46-50 bekler, 51-60 deri gider, 61+ iskelet
     static final int[] T = {10, 25, 35, 45, 50, 60};
+    // bu sayidan sonra agiz acilir ve yazi doner
+    static final int FINISH = 100;
 
     static float cl(float v) {
         return v < 0f ? 0f : (v > 1f ? 1f : v);
     }
 
     static class HeadView extends View {
-        float red = 0f, open = 1f, skin = 1f;
+        static final String TXT = "Bugünlük bu kadar yeter";
+        float red = 0f, open = 1f, skin = 1f, mouth = 0f, phase = 0f, hsize = 56f;
+        boolean ring = false;
         Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
+        Paint tp = new Paint(Paint.ANTI_ALIAS_FLAG);
         RectF rf = new RectF();
         Path path = new Path();
 
@@ -42,10 +48,12 @@ public class CounterService extends AccessibilityService {
             super(c);
         }
 
-        void set(float r, float o, float s) {
+        void set(float r, float o, float s, float m, boolean ringOn) {
             red = r;
             open = o;
             skin = s;
+            mouth = m;
+            ring = ringOn;
             invalidate();
         }
 
@@ -72,10 +80,9 @@ public class CounterService extends AccessibilityService {
 
         @Override
         protected void onDraw(Canvas c) {
-            float w = getWidth();
-            float h = getHeight();
-            float cx = w / 2f;
-            float cy = h / 2f;
+            float w = hsize;
+            float cx = getWidth() / 2f;
+            float cy = getHeight() / 2f;
             float r = w * 0.45f;
             int boneC = 0xFFE9E4D4;
             int skinC = 0xFFF0C08A;
@@ -128,14 +135,49 @@ public class CounterService extends AccessibilityService {
                 path.lineTo(cx + r * 0.1f, cy + r * 0.34f);
                 path.close();
                 c.drawPath(path, p);
-                rf.set(cx - r * 0.38f, cy + r * 0.52f, cx + r * 0.38f, cy + r * 0.78f);
-                fill(0xFFF5F2E8, b);
-                c.drawRect(rf, p);
-                line(0xFF2B2B2B, b, w * 0.02f);
-                c.drawRect(rf, p);
-                for (int i = 1; i < 4; i++) {
-                    float x = rf.left + rf.width() * i / 4f;
-                    c.drawLine(x, rf.top, x, rf.bottom, p);
+
+                float tw = r * 0.38f;
+                float th = r * 0.14f;
+                float jaw = r * 0.32f * mouth;
+                if (mouth > 0.02f) {
+                    fill(0xFF1A1A1A, b);
+                    rf.set(cx - tw, cy + r * 0.52f + th, cx + tw, cy + r * 0.52f + th + jaw + 1f);
+                    c.drawRect(rf, p);
+                }
+                for (int k = 0; k < 2; k++) {
+                    float top = cy + r * 0.52f + (k == 0 ? 0f : th + jaw);
+                    rf.set(cx - tw, top, cx + tw, top + th);
+                    fill(0xFFF5F2E8, b);
+                    c.drawRect(rf, p);
+                    line(0xFF2B2B2B, b, w * 0.02f);
+                    c.drawRect(rf, p);
+                    for (int i = 1; i < 4; i++) {
+                        float x = rf.left + rf.width() * i / 4f;
+                        c.drawLine(x, rf.top, x, rf.bottom, p);
+                    }
+                }
+            }
+
+            if (ring) {
+                float R = w * 0.78f;
+                float circ = (float) (2 * Math.PI * R);
+                path.reset();
+                path.addCircle(cx, cy, R, Path.Direction.CW);
+                tp.setTextSize(w * 0.2f);
+                tp.setTypeface(Typeface.DEFAULT_BOLD);
+                tp.setStrokeJoin(Paint.Join.ROUND);
+                float off = circ * (1f - phase);
+                for (int pass = 0; pass < 2; pass++) {
+                    if (pass == 0) {
+                        tp.setStyle(Paint.Style.STROKE);
+                        tp.setStrokeWidth(w * 0.08f);
+                        tp.setColor(0xFF000000);
+                    } else {
+                        tp.setStyle(Paint.Style.FILL);
+                        tp.setColor(0xFFFFFFFF);
+                    }
+                    c.drawTextOnPath(TXT, path, off, 0f, tp);
+                    c.drawTextOnPath(TXT, path, off - circ, 0f, tp);
                 }
             }
         }
@@ -143,15 +185,18 @@ public class CounterService extends AccessibilityService {
 
     long last = 0;
     WindowManager wm;
+    WindowManager.LayoutParams lp;
     LinearLayout box;
     HeadView head;
     TextView num;
     ObjectAnimator anim;
+    ValueAnimator orbit;
     boolean shown = false;
     Handler h = new Handler(Looper.getMainLooper());
     Runnable hideRun = new Runnable() {
         public void run() {
             if (anim != null) anim.cancel();
+            if (orbit != null) orbit.cancel();
             if (shown) {
                 try { wm.removeView(box); } catch (Exception e) {}
                 shown = false;
@@ -193,12 +238,16 @@ public class CounterService extends AccessibilityService {
 
     void showHead(int n) {
         if (wm == null) wm = (WindowManager) getSystemService(WINDOW_SERVICE);
+        boolean fin = n >= FINISH;
+        int hs = dp(56);
+        int size = fin ? dp(112) : hs;
         if (box == null) {
             box = new LinearLayout(this);
             box.setOrientation(LinearLayout.HORIZONTAL);
             box.setGravity(Gravity.CENTER_VERTICAL);
             head = new HeadView(this);
-            box.addView(head, new LinearLayout.LayoutParams(dp(56), dp(56)));
+            head.hsize = hs;
+            box.addView(head, new LinearLayout.LayoutParams(size, size));
             num = new TextView(this);
             num.setTextSize(15);
             num.setTypeface(null, Typeface.BOLD);
@@ -208,10 +257,12 @@ public class CounterService extends AccessibilityService {
             nl.leftMargin = dp(4);
             box.addView(num, nl);
         }
+        head.setLayoutParams(new LinearLayout.LayoutParams(size, size));
+
         float red = cl((n - T[0]) / (float) (T[1] - T[0]));
         float open = 1f - cl((n - T[1]) / (float) (T[2] - T[1]));
         float skin = 1f - cl((n - T[4]) / (float) (T[5] - T[4]));
-        head.set(red, open, skin);
+        head.set(red, open, skin, fin ? 1f : 0f, fin);
 
         float t = cl(n / (float) T[5]);
         int col = Color.HSVToColor(new float[]{120f * (1f - t), 0.85f, 0.95f});
@@ -236,8 +287,26 @@ public class CounterService extends AccessibilityService {
         anim.setRepeatCount(ValueAnimator.INFINITE);
         anim.start();
 
-        if (!shown) {
-            WindowManager.LayoutParams lp = new WindowManager.LayoutParams(
+        if (fin) {
+            if (orbit == null || !orbit.isRunning()) {
+                orbit = ValueAnimator.ofFloat(0f, 1f);
+                orbit.setDuration(5000);
+                orbit.setRepeatCount(ValueAnimator.INFINITE);
+                orbit.setInterpolator(new LinearInterpolator());
+                orbit.addUpdateListener(new ValueAnimator.AnimatorUpdateListener() {
+                    public void onAnimationUpdate(ValueAnimator a) {
+                        head.phase = (Float) a.getAnimatedValue();
+                        head.invalidate();
+                    }
+                });
+                orbit.start();
+            }
+        } else if (orbit != null) {
+            orbit.cancel();
+        }
+
+        if (lp == null) {
+            lp = new WindowManager.LayoutParams(
                     WindowManager.LayoutParams.WRAP_CONTENT,
                     WindowManager.LayoutParams.WRAP_CONTENT,
                     WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
@@ -246,15 +315,18 @@ public class CounterService extends AccessibilityService {
                             | WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
                     PixelFormat.TRANSLUCENT);
             lp.gravity = Gravity.TOP | Gravity.CENTER_HORIZONTAL;
-            lp.y = dp(40);
+        }
+        lp.y = fin ? dp(12) : dp(40);
+        if (!shown) {
             wm.addView(box, lp);
             shown = true;
+        } else {
+            wm.updateViewLayout(box, lp);
         }
         h.removeCallbacks(hideRun);
         h.postDelayed(hideRun, fin ? 5000 : 3500);
-        
     }
 
     @Override
     public void onInterrupt() {}
-                 }
+                                        }
