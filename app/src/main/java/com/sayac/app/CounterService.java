@@ -251,7 +251,8 @@ public class CounterService extends AccessibilityService {
             shown = true;
         }
         h.removeCallbacks(hideRun);
-        h.postDelayed(hideRun, 3500);
+        h.postDelayed(hideRun, fin ? 5000 : 3500);
+        
     }
 
     @Override
